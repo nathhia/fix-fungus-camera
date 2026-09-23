@@ -70,9 +70,9 @@ Medida objetiva da sombra do fungo que continua visível, nas áreas lisas de ca
 
 | | Antes | Depois |
 |---|---|---|
-| Céu/mar (3134, 3135, 3151–3155) | 1.0–3.3% | 0.1–0.7% |
+| Céu/mar (3134, 3135, 3151–3155) | 1.0–3.3% | 0.0–0.7% |
 | Jantar (3139–3147) | 1.8–3.1% | 0.7–2.3% |
-| **Média** | **2.20%** | **0.78%** |
+| **Média** | **2.20%** | **0.77%** |
 
 As fotos do jantar em F/3.5 com luz de lâmpada são as mais difíceis. Nelas ainda sobra parte da sombra no alto da parede.
 
