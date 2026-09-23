@@ -60,6 +60,7 @@ Arquivos que não são imagens válidas, ou com resolução diferente da máscar
    A intensidade `k` é medida **por canal de cor**: a cor da sombra depende da luz da cena (sob céu azul, a mancha marrom rouba bem mais azul do que na calibração feita com luz quente).
    Para medir a sombra, cada pixel é comparado com o **fundo local calculado só entre vizinhos de brilho parecido**, para que o céu claro não faça o mar logo abaixo do horizonte (ou uma parede clara, o móvel escuro ao lado) parecer sombreado.
    **Manchas largas** (a marrom) são tratadas à parte: além de bloquear luz, elas espalham um véu, então escurecem fundo claro e clareiam fundo escuro. Só são corrigidas com evidência medida em regiões de brilho parecido.
+   No fim, cada mancha larga ganha um **ajuste final por canal** contra a vizinhança imediata. Sob uma luz diferente da calibração, a mancha marrom pode sobrar (marrom) ou passar do ponto (um ponto claro/azulado), e esse ajuste desfaz o que sobrou nos dois sentidos, recuando quando a medida é incerta (teto de ±8%).
 4. **`cv2.inpaint`** (Telea/NS) só nos pixels quentes.
 
 `--method inpaint` aplica só o `cv2.inpaint` na máscara binária. Serve para comparar, mas em filamentos largos ele inventa conteúdo e borra ondas, folhagem e rostos.

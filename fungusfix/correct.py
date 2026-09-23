@@ -66,6 +66,10 @@ class CorrectionParams:
     passes: int = 2  # repete medir+corrigir: a 2ª passada pega a sombra que a 1ª subestimou
     per_channel: bool = True  # intensidade medida separadamente em B, G e R
     broad_brightness_matched: bool = True  # manchas largas: só corrige com evidência de brilho parecido
+    broad_touchup: bool = True  # ajuste final de cada mancha larga contra a vizinhança (sobra marrom ou branca)
+    touchup_min: float = 0.02  # atenuação (log, desfocada) que define uma mancha larga para o ajuste final
+    touchup_ring: int = 20  # vizinhança (px de análise) usada como referência no ajuste final
+    touchup_max: float = 0.08  # teto do ajuste final, em log (≈ ±8%)
 
 
 @dataclass(frozen=True)
@@ -113,6 +117,8 @@ def correct_image(
     passes = 1 if params.strength is not None else max(1, params.passes)
     for _ in range(passes):
         out, info = _flatfield_pass(out, dm, params, analysis, fnumber)
+    if params.strength is None and params.broad_touchup and info is not None:
+        out = _broad_touchup(out, dm, params, analysis, info.sigma)
     if params.method is Method.HYBRID and dm.hotpixel_mask.any():
         out = cv2.inpaint(out, dm.hotpixel_mask, params.inpaint_radius, params.algorithm.cv_flag)
     return out, info
@@ -159,3 +165,49 @@ def _flatfield_pass(
     gain = cv2.resize(np.exp(log_gain), (w, h), interpolation=cv2.INTER_CUBIC)
     out = np.clip(img_bgr.astype(np.float32) * gain + 0.5, 0, 255).astype(np.uint8)
     return out, CorrectionInfo(sigma, k, measured, fit)
+
+
+def _broad_touchup(
+    img_bgr: np.ndarray, dm: DefectMask, params: CorrectionParams, analysis: AnalysisParams, sigma: float
+) -> np.ndarray:
+    """Ajuste final de cada mancha larga, por canal, contra a vizinhança imediata.
+
+    As passadas usam uma relação mancha/filamento vinda da calibração; sob outra luz a
+    mancha marrom pode sobrar (marrom) ou passar do ponto (branca/azulada). Aqui, para
+    cada mancha e canal, ajusta ``resíduo = offset + d·forma`` nos pixels lisos em volta
+    e desfaz ``d`` com sinal livre, encolhido quando a medida é incerta.
+    """
+    _, broad_sharp = split_broad_component(dm.fungus_map)
+    shape = blur_map(broad_sharp, sigma).mean(axis=2)
+    n, labels = cv2.connectedComponents((shape > params.touchup_min).astype(np.uint8))
+    if n <= 1:
+        return img_bgr
+    res = residual(img_bgr, analysis)
+    ring = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * params.touchup_ring + 1,) * 2)
+    log_gain = np.zeros(res.shape, np.float32)
+    for i in range(1, n):
+        comp = labels == i
+        region = cv2.dilate(comp.astype(np.uint8), ring) > 0
+        # Forma desta mancha só (suave, sem degrau), normalizada para 1 no pico.
+        t = shape * cv2.GaussianBlur(comp.astype(np.float32), (0, 0), 2)
+        t /= max(float(t.max()), 1e-6)
+        for c in range(3):
+            ok = region & ~np.isnan(res[..., c])
+            core = ok & (t > 0.5)
+            if core.sum() < 30 or (ok & (t < 0.05)).sum() < 60:
+                continue  # sem área lisa na mancha ou em volta: não mexe
+            x = t[ok]
+            y = res[..., c][ok]
+            xc, yc = x - x.mean(), y - y.mean()
+            sxx = float(xc @ xc)
+            d = float(xc @ yc) / sxx
+            err = yc - d * xc
+            se = float(np.sqrt((err @ err) / max(len(x) - 2, 1) / sxx))
+            t2 = (d / se) ** 2 if se > 0 else 0.0
+            d *= t2 / (t2 + 16.0)
+            log_gain[..., c] -= np.clip(d, -params.touchup_max, params.touchup_max) * t
+    if not log_gain.any():
+        return img_bgr
+    h, w = img_bgr.shape[:2]
+    gain = cv2.resize(np.exp(log_gain), (w, h), interpolation=cv2.INTER_CUBIC)
+    return np.clip(img_bgr.astype(np.float32) * gain + 0.5, 0, 255).astype(np.uint8)
