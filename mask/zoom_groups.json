@@ -1,6 +1,22 @@
 {
-  "group_ratio": 1.25,
+  "group_ratio": 1.5,
   "groups": {
-    "zoom_5.0mm": 5.0
+    "zoom_5.0mm": 5.0,
+    "zoom_26.4mm": 26.408
+  },
+  "analysis": {
+    "scale": 0.25,
+    "background_sigma": 120.0,
+    "flat_texture_max": 0.022,
+    "blur_sigmas": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      6,
+      8,
+      11
+    ]
   }
 }

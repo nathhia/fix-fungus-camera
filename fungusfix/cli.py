@@ -14,6 +14,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 from .correct import CorrectionParams, InpaintAlgorithm, Method, correct_image
 from .imageio import ImageReadError, read_focal_length, read_image, write_image
 from .mask import MaskParams, MaskSet, build_mask
+from .model import AnalysisParams
 
 log = logging.getLogger("fungusfix")
 
@@ -30,6 +31,7 @@ def process_batch(
     output_dir: Path,
     masks: MaskSet,
     params: CorrectionParams,
+    analysis: AnalysisParams,
     jpeg_quality: int = 95,
     overwrite: bool = False,
 ) -> BatchReport:
@@ -55,9 +57,17 @@ def process_batch(
                     report.skipped.append((src.name, f"resolução {img.shape[1]}x{img.shape[0]} != máscara"))
                     log.warning("pulando %s: resolução diferente da máscara", src.name)
                     continue
-                out, k = correct_image(img, dm, params)
+                out, info = correct_image(img, dm, params, analysis)
                 write_image(dst, out, src, jpeg_quality=jpeg_quality)
-                log.debug("%s: zoom=%s intensidade=%s", src.name, group, k)
+                if info is not None:
+                    log.debug(
+                        "%s: zoom=%s desfoque=%.0f intensidade=%.2f (%s)",
+                        src.name,
+                        group,
+                        info.sigma,
+                        info.k,
+                        "medida" if info.measured else "típica",
+                    )
                 report.done.append(src.name)
             except Exception as exc:  # noqa: BLE001 - um arquivo ruim não interrompe o lote
                 report.failed.append((src.name, repr(exc)))
@@ -69,12 +79,11 @@ def _cmd_build_mask(args: argparse.Namespace) -> int:
     params = MaskParams(
         fungus_threshold=args.fungus_threshold,
         fungus_threshold_low=args.fungus_threshold_low,
-        fungus_dilate=args.fungus_dilate,
         hot_threshold=args.hot_threshold,
     )
     with logging_redirect_tqdm():
         masks, preview_base = build_mask(args.reference, params)
-    masks.save(args.mask_dir, preview_base)
+    masks.save(args.mask_dir, preview_base, params)
     frac = (masks.global_mask.fungus_mask > 0).mean()
     log.info(
         "máscara salva em %s (fungo: %.1f%% do quadro; grupos de zoom: %s)",
@@ -96,15 +105,19 @@ def _cmd_process(args: argparse.Namespace) -> int:
             return 2
         log.info("máscara não encontrada; gerando a partir de %s", args.reference)
         _cmd_build_mask(args)
-    masks = MaskSet.load(args.mask_dir)
+    try:
+        masks, analysis = MaskSet.load(args.mask_dir)
+    except (FileNotFoundError, KeyError) as exc:
+        log.error("máscara inválida ou de versão antiga (%s); rode 'build-mask' de novo", exc)
+        return 2
 
-    auto = args.strength == "auto"
     params = CorrectionParams(
         method=Method(args.method),
         algorithm=InpaintAlgorithm(args.algorithm),
         inpaint_radius=args.radius,
-        auto_strength=auto,
-        strength=1.0 if auto else float(args.strength),
+        strength=None if args.strength == "auto" else float(args.strength),
+        blur=None if args.blur == "auto" else float(args.blur),
+        max_gain=args.max_gain,
     )
     log.info(
         "método=%s algoritmo=%s raio=%d intensidade=%s",
@@ -114,7 +127,7 @@ def _cmd_process(args: argparse.Namespace) -> int:
         args.strength,
     )
 
-    report = process_batch(args.input, args.output, masks, params, args.quality, args.overwrite)
+    report = process_batch(args.input, args.output, masks, params, analysis, args.quality, args.overwrite)
 
     log.info(
         "concluído: %d corrigidas, %d puladas, %d com erro", len(report.done), len(report.skipped), len(report.failed)
@@ -156,9 +169,6 @@ def build_parser() -> argparse.ArgumentParser:
             help=f"limiar baixo da histerese (padrão {d.fungus_threshold_low})",
         )
         p.add_argument(
-            "--fungus-dilate", type=int, default=d.fungus_dilate, help=f"margem em px (padrão {d.fungus_dilate})"
-        )
-        p.add_argument(
             "--hot-threshold",
             type=int,
             default=d.hot_threshold,
@@ -189,6 +199,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--strength", default="auto", help="intensidade do flat-field: 'auto' (estimada por foto) ou um número, ex. 1.2"
     )
+    p.add_argument(
+        "--blur", default="auto", help="desfoque da sombra: 'auto' (medido por foto) ou px de análise, ex. 4"
+    )
+    p.add_argument(
+        "--max-gain",
+        type=float,
+        default=CorrectionParams.max_gain,
+        help=f"teto da correção em log (padrão {CorrectionParams.max_gain} ≈ +49%%)",
+    )
     p.add_argument("--quality", type=int, default=95, help="qualidade JPEG de saída (padrão 95)")
     p.add_argument("--overwrite", action="store_true", help="sobrescreve arquivos já existentes na saída")
     p.set_defaults(func=_cmd_process)
@@ -201,12 +220,14 @@ def main(argv: list[str] | None = None) -> int:
     if not args.verbose:
         logging.getLogger("fungusfix.mask").setLevel(logging.WARNING)
         logging.getLogger("fungusfix").setLevel(logging.INFO)
-    if args.command == "process" and args.strength != "auto":
-        try:
-            float(args.strength)
-        except ValueError:
-            log.error("--strength deve ser 'auto' ou um número")
-            return 2
+    if args.command == "process":
+        for name in ("strength", "blur"):
+            value = getattr(args, name)
+            try:
+                value == "auto" or float(value)
+            except ValueError:
+                log.error("--%s deve ser 'auto' ou um número", name)
+                return 2
     return args.func(args)
 
 

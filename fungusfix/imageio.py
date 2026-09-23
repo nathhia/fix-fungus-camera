@@ -10,6 +10,7 @@ correta.
 from __future__ import annotations
 
 import io
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -91,4 +92,14 @@ def read_focal_length(path: Path) -> float | None:
             value = pil.getexif().get_ifd(ExifTags.IFD.Exif).get(ExifTags.Base.FocalLength)
         return float(value) if value else None
     except Exception:  # noqa: BLE001 - EXIF malformado não deve derrubar o lote
+        return None
+
+
+def read_capture_time(path: Path) -> datetime | None:
+    """Data/hora da captura (EXIF DateTimeOriginal), ou ``None``."""
+    try:
+        with Image.open(path) as pil:
+            value = pil.getexif().get_ifd(ExifTags.IFD.Exif).get(ExifTags.Base.DateTimeOriginal)
+        return datetime.strptime(str(value), "%Y:%m:%d %H:%M:%S") if value else None
+    except Exception:  # noqa: BLE001
         return None
