@@ -58,19 +58,21 @@ Arquivos que não são imagens válidas, ou com resolução diferente da máscar
 2. **Em cada foto**, o script lê zoom e abertura no EXIF, prevê o desfoque da sombra e **mede** desfoque e intensidade nas áreas lisas da própria foto. A intensidade também varia no espaço: onde a foto não mostra a sombra (textura, objeto na frente), a correção recua em vez de clarear um ponto que não estava escuro.
 3. **Correção flat-field:** cada pixel é multiplicado por `exp(k · desfoque(A))`, desfazendo a atenuação e recuperando a textura real sob o filamento. Isso é feito em duas passadas.
    A intensidade `k` é medida **por canal de cor**: a cor da sombra depende da luz da cena (sob céu azul, a mancha marrom rouba bem mais azul do que na calibração feita com luz quente).
+   Para medir a sombra, cada pixel é comparado com o **fundo local calculado só entre vizinhos de brilho parecido**, para que o céu claro não faça o mar logo abaixo do horizonte (ou uma parede clara, o móvel escuro ao lado) parecer sombreado.
+   **Manchas largas** (a marrom) são tratadas à parte: além de bloquear luz, elas espalham um véu, então escurecem fundo claro e clareiam fundo escuro. Só são corrigidas com evidência medida em regiões de brilho parecido.
 4. **`cv2.inpaint`** (Telea/NS) só nos pixels quentes.
 
 `--method inpaint` aplica só o `cv2.inpaint` na máscara binária. Serve para comparar, mas em filamentos largos ele inventa conteúdo e borra ondas, folhagem e rostos.
 
 ### Resultado nas 21 fotos de referência
 
-Medida objetiva da sombra do fungo que continua visível, nas áreas lisas de cada foto (medida com o mapa de calibração em resolução total):
+Medida objetiva da sombra do fungo que continua visível, nas áreas lisas de cada foto (com o mapa de calibração em resolução total e o fundo local que respeita bordas). O processamento leva ~15 s por foto.
 
 | | Antes | Depois |
 |---|---|---|
-| Céu/mar (3134, 3135, 3151–3155) | 1.0–4.0% | 0.2–1.1% |
-| Jantar (3139–3147) | 2.0–4.4% | 0.7–3.2% |
-| **Média** | **2.56%** | **1.11%** |
+| Céu/mar (3134, 3135, 3151–3155) | 1.0–3.3% | 0.1–0.7% |
+| Jantar (3139–3147) | 1.8–3.1% | 0.7–2.3% |
+| **Média** | **2.20%** | **0.78%** |
 
 As fotos do jantar em F/3.5 com luz de lâmpada são as mais difíceis. Nelas ainda sobra parte da sombra no alto da parede.
 
