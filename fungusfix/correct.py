@@ -22,7 +22,17 @@ import cv2
 import numpy as np
 
 from .mask import DefectMask
-from .model import AnalysisParams, Fit, blur_map, fit_shadow, interpolate_aperture, residual, strength_field
+from .model import (
+    AnalysisParams,
+    Fit,
+    blur_map,
+    brightness_matched_strength,
+    fit_shadow,
+    interpolate_aperture,
+    residual,
+    split_broad_component,
+    strength_field,
+)
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +65,7 @@ class CorrectionParams:
     max_k_factor: float = 4.0  # k medido limitado a este múltiplo do esperado (acima disso é cena, não sombra)
     passes: int = 2  # repete medir+corrigir: a 2ª passada pega a sombra que a 1ª subestimou
     per_channel: bool = True  # intensidade medida separadamente em B, G e R
+    broad_brightness_matched: bool = True  # manchas largas: só corrige com evidência de brilho parecido
 
 
 @dataclass(frozen=True)
@@ -133,7 +144,17 @@ def _flatfield_pass(
             k_field = strength_field(res, a, k)
 
     k3 = k_field if k_field.ndim == 3 else k_field[..., None]
-    log_gain = np.minimum(k3 * a, params.max_gain)
+    if params.strength is None and params.broad_brightness_matched:
+        # Manchas largas (a marrom) também espalham luz: escurecem fundo claro e clareiam fundo escuro.
+        # Os filamentos seguem o modelo acima; as manchas usam só evidência de brilho parecido.
+        thin, broad = split_broad_component(a)
+        small = cv2.resize(img_bgr, (a.shape[1], a.shape[0]), interpolation=cv2.INTER_AREA).astype(np.float32)
+        log_lum = cv2.GaussianBlur(np.log(small.mean(axis=2) + 1.0), (0, 0), 3)
+        k_broad = np.dstack([brightness_matched_strength(res[..., c], broad[..., c], log_lum) for c in range(3)])
+        log_gain = k3 * thin + k_broad * broad
+    else:
+        log_gain = k3 * a
+    log_gain = np.clip(log_gain, -params.max_gain, params.max_gain)
     h, w = img_bgr.shape[:2]
     gain = cv2.resize(np.exp(log_gain), (w, h), interpolation=cv2.INTER_CUBIC)
     out = np.clip(img_bgr.astype(np.float32) * gain + 0.5, 0, 255).astype(np.uint8)

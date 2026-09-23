@@ -27,6 +27,7 @@ class AnalysisParams:
     background_sigma: float = 250.0  # px na resolução original; > maior defeito (mancha de ~280 px)
     flat_texture_max: float = 0.022  # textura fina máxima (log) para considerar a região lisa
     blur_sigmas: tuple[float, ...] = (0, 1, 2, 3, 4, 6, 8, 11, 14)  # desfoques testados (px de análise)
+    edge_bin_width: float = 0.3  # fundo local respeita bordas: faixas de brilho em log (0 = desliga)
 
 
 def _normalized_blur(values: np.ndarray, weight: np.ndarray, sigma: float) -> np.ndarray:
@@ -78,14 +79,45 @@ def residual_and_texture(
     flat = cv2.erode(flat.astype(np.uint8), np.ones((9, 9), np.uint8)).astype(np.float32)
 
     sigma = p.background_sigma * p.scale
-    bg_lum = _normalized_blur(lum, flat, sigma)
+    guide = cv2.GaussianBlur(lum, (0, 0), 4)  # brilho da região, sem os detalhes finos (nem a sombra)
+    bg_lum = _edge_aware_blur(lum[..., None], flat, guide, sigma, p.edge_bin_width)[..., 0]
     # 2ª passada sem a própria sombra, para ela não puxar o fundo para baixo.
     w = flat * ((lum - bg_lum) > -dark_threshold)
-    out = np.empty_like(logi)
-    for c in range(3):
-        out[..., c] = logi[..., c] - _normalized_blur(logi[..., c], w, sigma)
+    out = logi - _edge_aware_blur(logi, w, guide, sigma, p.edge_bin_width)
     out[flat == 0] = np.nan
     return out, texture
+
+
+def _edge_aware_blur(
+    values: np.ndarray, weight: np.ndarray, guide: np.ndarray, sigma: float, bin_width: float
+) -> np.ndarray:
+    """Fundo local que não atravessa bordas fortes (horizonte, parede x móvel).
+
+    Convolução normalizada separada por faixas de brilho do ``guide`` (log):
+    cada pixel é comparado só com vizinhos de brilho parecido, então o mar logo
+    abaixo do céu não parece "sombreado" por causa do céu claro ao lado.
+    ``bin_width`` <= 0 desliga (blur comum).
+    """
+    if bin_width <= 0:
+        return np.dstack([_normalized_blur(values[..., c], weight, sigma) for c in range(values.shape[2])])
+    lo, hi = np.percentile(guide, 0.5), np.percentile(guide, 99.5)
+    num = np.zeros(values.shape, np.float32)
+    den = np.zeros(guide.shape, np.float32)
+    for center in np.arange(lo, hi + bin_width, bin_width):
+        member = np.clip(1.0 - np.abs(guide - center) / bin_width, 0.0, 1.0).astype(np.float32)
+        if not member.any():
+            continue
+        wb = weight * member
+        wsum = cv2.GaussianBlur(wb, (0, 0), sigma)
+        for c in range(values.shape[2]):
+            blurred = cv2.GaussianBlur(values[..., c] * wb, (0, 0), sigma) / np.maximum(wsum, 1e-6)
+            num[..., c] += member * blurred * (wsum > 1e-3)
+        den += member * (wsum > 1e-3)
+    fallback = np.dstack([_normalized_blur(values[..., c], weight, sigma) for c in range(values.shape[2])])
+    has = den > 1e-6
+    out = fallback.copy()
+    out[has] = num[has] / den[has][:, None]
+    return out
 
 
 def blur_map(a: np.ndarray, sigma: float) -> np.ndarray:
@@ -185,3 +217,53 @@ def interpolate_aperture(table: list[ApertureEntry], fnumber: float) -> tuple[fl
         float(np.interp(1.0 / fnumber, x, [e.sigma for e in pts])),
         float(np.interp(1.0 / fnumber, x, [e.k for e in pts])),
     )
+
+
+def split_broad_component(a: np.ndarray, radius: int = 12) -> tuple[np.ndarray, np.ndarray]:
+    """Separa manchas largas (ex.: a mancha marrom) dos filamentos finos por abertura morfológica.
+
+    Retorna ``(filamentos, manchas)`` com ``filamentos + manchas == a``.
+    """
+    disk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
+    broad = cv2.morphologyEx(a, cv2.MORPH_OPEN, disk)
+    broad = cv2.GaussianBlur(broad, (0, 0), radius / 3)  # sem degrau na borda da mancha
+    broad = np.minimum(broad, a)
+    return a - broad, broad
+
+
+def brightness_matched_strength(
+    res: np.ndarray,
+    x: np.ndarray,
+    log_lum: np.ndarray,
+    tile: int = 40,
+    bin_width: float = 0.25,
+    prior_weight: float = 0.3,
+) -> np.ndarray:
+    """Intensidade local usando só evidência de pixels com brilho parecido; sem evidência, 0.
+
+    Para defeitos cujo efeito depende do que está atrás (a mancha marrom escurece
+    o céu claro mas clareia o mar escuro, por espalhar luz), a medida feita no céu
+    não vale para o mar. Cada faixa de brilho (``bin_width`` em log) tem seu próprio
+    ajuste; a saída mistura as faixas vizinhas suavemente.
+    """
+    r = res
+    w_flat = (~np.isnan(r)).astype(np.float32)
+    y = np.nan_to_num(-r).astype(np.float32)
+    box = (tile, tile)
+    lo, hi = np.percentile(log_lum, 1), np.percentile(log_lum, 99)
+    centers = np.arange(lo, hi + bin_width, bin_width)
+    num = np.zeros_like(x, dtype=np.float32)
+    den = np.zeros_like(x, dtype=np.float32)
+    sxx_all = cv2.boxFilter(w_flat * x * x, -1, box, normalize=False)
+    informative = sxx_all[sxx_all > 0]
+    lam = prior_weight * float(np.percentile(informative, 90)) if informative.size else 1.0
+    for c in centers:
+        member = np.clip(1.0 - np.abs(log_lum - c) / bin_width, 0.0, 1.0).astype(np.float32)  # triangular
+        w = w_flat * member
+        sxy = cv2.boxFilter(w * x * y, -1, box, normalize=False)
+        sxx = cv2.boxFilter(w * x * x, -1, box, normalize=False)
+        k_c = sxy / (sxx + lam)  # prior 0: sem evidência, não corrige
+        num += member * k_c
+        den += member
+    k = num / np.maximum(den, 1e-6)
+    return cv2.GaussianBlur(np.clip(k, -2.0, 4.0).astype(np.float32), (0, 0), tile / 4)
