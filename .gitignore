@@ -7,3 +7,5 @@ reference/*
 !reference/README.md
 input/
 output/
+calibration/*
+!calibration/README.md

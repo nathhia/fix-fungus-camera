@@ -12,7 +12,7 @@ from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from .correct import CorrectionParams, InpaintAlgorithm, Method, correct_image
-from .imageio import ImageReadError, read_focal_length, read_image, write_image
+from .imageio import ImageReadError, read_fnumber, read_focal_length, read_image, write_image
 from .mask import MaskParams, MaskSet, build_mask
 from .model import AnalysisParams
 
@@ -57,7 +57,7 @@ def process_batch(
                     report.skipped.append((src.name, f"resolução {img.shape[1]}x{img.shape[0]} != máscara"))
                     log.warning("pulando %s: resolução diferente da máscara", src.name)
                     continue
-                out, info = correct_image(img, dm, params, analysis)
+                out, info = correct_image(img, dm, params, analysis, read_fnumber(src))
                 write_image(dst, out, src, jpeg_quality=jpeg_quality)
                 if info is not None:
                     log.debug(
@@ -82,7 +82,10 @@ def _cmd_build_mask(args: argparse.Namespace) -> int:
         hot_threshold=args.hot_threshold,
     )
     with logging_redirect_tqdm():
-        masks, preview_base = build_mask(args.reference, params)
+        calibration = args.calibration if args.calibration and args.calibration.is_dir() else None
+        if calibration is None:
+            log.info("sem pasta de calibração: mapa do fungo estimado só pelas referências")
+        masks, preview_base = build_mask(args.reference, params, calibration)
     masks.save(args.mask_dir, preview_base, params)
     frac = (masks.global_mask.fungus_mask > 0).mean()
     log.info(
@@ -154,6 +157,12 @@ def build_parser() -> argparse.ArgumentParser:
             type=Path,
             default=reference_default,
             help="pasta com fotos de referência (fundos lisos e claros ajudam muito)",
+        )
+        p.add_argument(
+            "--calibration",
+            type=Path,
+            default=Path("calibration"),
+            help="pasta com fotos de campo branco desfocado, em vários zooms (padrão: calibration)",
         )
         p.add_argument("--mask-dir", type=Path, default=Path("mask"), help="onde salvar/ler a máscara (padrão: mask)")
         p.add_argument(

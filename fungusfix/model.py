@@ -26,7 +26,7 @@ class AnalysisParams:
     scale: float = 0.25
     background_sigma: float = 250.0  # px na resolução original; > maior defeito (mancha de ~280 px)
     flat_texture_max: float = 0.022  # textura fina máxima (log) para considerar a região lisa
-    blur_sigmas: tuple[float, ...] = (0, 1, 2, 3, 4, 6, 8, 11)  # desfoques testados (px de análise)
+    blur_sigmas: tuple[float, ...] = (0, 1, 2, 3, 4, 6, 8, 11, 14)  # desfoques testados (px de análise)
 
 
 def _normalized_blur(values: np.ndarray, weight: np.ndarray, sigma: float) -> np.ndarray:
@@ -36,20 +36,37 @@ def _normalized_blur(values: np.ndarray, weight: np.ndarray, sigma: float) -> np
     return num / np.maximum(den, 1e-6)
 
 
-def residual(img_bgr: np.ndarray, p: AnalysisParams, dark_threshold: float = 0.015) -> np.ndarray:
+def analysis_shape(full_shape: tuple[int, int], p: AnalysisParams) -> tuple[int, int]:
+    return round(full_shape[0] * p.scale), round(full_shape[1] * p.scale)
+
+
+def date_stamp_mask(small_bgr: np.ndarray) -> np.ndarray:
+    """Pixels do carimbo de data da câmera (texto laranja saturado), com margem."""
+    hsv = cv2.cvtColor(small_bgr.astype(np.uint8), cv2.COLOR_BGR2HSV)
+    orange = (hsv[..., 0] >= 5) & (hsv[..., 0] <= 25) & (hsv[..., 1] > 150) & (hsv[..., 2] > 120)
+    return cv2.dilate(orange.astype(np.uint8), np.ones((15, 15), np.uint8)) > 0
+
+
+def residual(
+    img_bgr: np.ndarray, p: AnalysisParams, full_shape: tuple[int, int] | None = None, dark_threshold: float = 0.015
+) -> np.ndarray:
     """``log(I) - log(fundo local)`` por canal, na escala de análise; NaN onde a foto não é lisa.
 
-    Retorna ``(h, w, 3)`` float32. Negativo = mais escuro que o entorno.
+    ``full_shape`` é a resolução do sensor; uma foto menor (ex.: 640x480) é
+    redimensionada para a mesma grade de análise. Retorna ``(h, w, 3)`` float32.
+    Negativo = mais escuro que o entorno.
     """
-    out, _ = residual_and_texture(img_bgr, p, dark_threshold)
+    out, _ = residual_and_texture(img_bgr, p, full_shape, dark_threshold)
     return out
 
 
 def residual_and_texture(
-    img_bgr: np.ndarray, p: AnalysisParams, dark_threshold: float = 0.015
+    img_bgr: np.ndarray, p: AnalysisParams, full_shape: tuple[int, int] | None = None, dark_threshold: float = 0.015
 ) -> tuple[np.ndarray, np.ndarray]:
     """Como :func:`residual`, e também o mapa de textura fina (para pesar pixels no ajuste)."""
-    small = cv2.resize(img_bgr, None, fx=p.scale, fy=p.scale, interpolation=cv2.INTER_AREA).astype(np.float32)
+    h, w = analysis_shape(full_shape or img_bgr.shape[:2], p)
+    interp = cv2.INTER_AREA if img_bgr.shape[1] >= w else cv2.INTER_CUBIC
+    small = cv2.resize(img_bgr, (w, h), interpolation=interp).astype(np.float32)
     logi = np.log(small + 1.0)
     lum = logi.mean(axis=2)
     gray = small.mean(axis=2)
@@ -57,7 +74,7 @@ def residual_and_texture(
     # Textura numa escala menor que a sombra: céu/parede ~ 0, folhagem >> 0.
     fine = lum - cv2.GaussianBlur(lum, (0, 0), 1.5)
     texture = np.sqrt(cv2.GaussianBlur(fine * fine, (0, 0), 6))
-    flat = (texture < p.flat_texture_max) & (gray > 30) & (small.max(axis=2) < 250)
+    flat = (texture < p.flat_texture_max) & (gray > 30) & (small.max(axis=2) < 250) & ~date_stamp_mask(small)
     flat = cv2.erode(flat.astype(np.uint8), np.ones((9, 9), np.uint8)).astype(np.float32)
 
     sigma = p.background_sigma * p.scale
@@ -87,7 +104,13 @@ class Fit:
         return self.t >= 4.0 and self.n >= 2000
 
 
-def fit_shadow(res: np.ndarray, a: np.ndarray, p: AnalysisParams, support: float = 0.003) -> Fit:
+def fit_shadow(
+    res: np.ndarray,
+    a: np.ndarray,
+    p: AnalysisParams,
+    support: float = 0.003,
+    sigmas: tuple[float, ...] | None = None,
+) -> Fit:
     """Ajusta (σ, k) para que ``-k · G_σ ∗ A`` explique o resíduo da foto.
 
     Mínimos quadrados em luminância, só nos pixels lisos próximos ao defeito.
@@ -104,7 +127,7 @@ def fit_shadow(res: np.ndarray, a: np.ndarray, p: AnalysisParams, support: float
         return best
     y = -r[v]
     best_err = np.inf
-    for s in p.blur_sigmas:
+    for s in sigmas or p.blur_sigmas:
         x = blur_map(a_lum, s)[v]
         sxx = float((x * x).sum())
         if sxx <= 0:
@@ -145,3 +168,20 @@ def strength_field(
     k = (sxy + lam * k0) / (sxx + lam)
     k = np.clip(k, 0.0, max(k_global, k0) * 1.5)
     return cv2.GaussianBlur(k.astype(np.float32), (0, 0), tile / 2)
+
+
+@dataclass(frozen=True)
+class ApertureEntry:
+    fnumber: float
+    sigma: float
+    k: float
+
+
+def interpolate_aperture(table: list[ApertureEntry], fnumber: float) -> tuple[float, float]:
+    """(σ, k) previstos para uma abertura, interpolando em 1/F (proporcional ao cone de luz)."""
+    pts = sorted(table, key=lambda e: 1.0 / e.fnumber)
+    x = [1.0 / e.fnumber for e in pts]
+    return (
+        float(np.interp(1.0 / fnumber, x, [e.sigma for e in pts])),
+        float(np.interp(1.0 / fnumber, x, [e.k for e in pts])),
+    )

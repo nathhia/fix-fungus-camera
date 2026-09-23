@@ -1,0 +1,11 @@
+{
+  "prior_sigma": 2.0,
+  "prior_k": 0.8,
+  "aperture_table": [
+    {
+      "fnumber": 8.0,
+      "sigma": 3.0,
+      "k": 1.1222356776704756
+    }
+  ]
+}

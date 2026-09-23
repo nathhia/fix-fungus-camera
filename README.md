@@ -1,21 +1,31 @@
 # fix-fungus-camera
 
-Remove em lote os artefatos fixos da Canon PowerShot SX170 IS: **fungo** no bloco óptico e **pixels quentes** do sensor (o "ponto branco"). O EXIF original é preservado.
+Remove em lote os defeitos fixos da Canon PowerShot SX170 IS: **fungo** no bloco óptico, uma **mancha marrom** difusa e **pixels quentes** do sensor (os "pontos brancos"). O EXIF original é preservado.
 
-## Uso rápido
+## Uso
 
 ```bash
 pip install -r requirements.txt
 
-# 1) Gera a máscara uma única vez, a partir das fotos em reference/
-python fix_fungus.py build-mask --reference reference --mask-dir mask
-#    -> confira mask/preview.jpg (fungo em magenta, pixels quentes circulados)
+# 1) Gera a máscara (uma vez, ou quando adicionar fotos de calibração/referência)
+python fix_fungus.py build-mask --reference reference --calibration calibration
+#    -> confira mask/preview.jpg
 
 # 2) Corrige todas as fotos de input/ e grava em output/
 python fix_fungus.py process --input input --output output
 ```
 
-A máscara pronta já está versionada em `mask/`, então o passo 1 só é necessário para regerá-la (por exemplo, depois de adicionar mais referências).
+A máscara pronta já está versionada em `mask/`, então o passo 1 só é necessário para regerá-la.
+
+### Pastas de entrada
+
+| Pasta | O que colocar | Para quê |
+|---|---|---|
+| `calibration/` | Fotos de **campo branco desfocado** (papel perto da lente, parede lisa, céu, TV branca), em vários zooms e aberturas. Podem ser pequenas (ex.: 640×480). | Mapa do fungo por zoom, e como a sombra muda com a abertura. Ver `calibration/README.md`. |
+| `reference/` | Algumas fotos normais em **resolução total**. | Resolução da máscara, pixels quentes e intensidade típica da sombra em fotos reais. |
+| `input/` | As fotos a corrigir. | — |
+
+Sem `calibration/`, o script tenta estimar o fungo só pelas áreas lisas das fotos de `reference/`. Funciona, mas bem pior.
 
 ### Opções de `process`
 
@@ -24,60 +34,62 @@ A máscara pronta já está versionada em `mask/`, então o passo 1 só é neces
 | `--method` | `hybrid` | `hybrid`, `flatfield` ou `inpaint` (ver abaixo) |
 | `--algorithm` | `telea` | `telea` = `cv2.INPAINT_TELEA`, `ns` = `cv2.INPAINT_NS` |
 | `--radius` | `5` | `inpaintRadius` do `cv2.inpaint` |
-| `--strength` | `auto` | intensidade do flat-field: `auto` (estimada por foto) ou um número (ex. `1.2`) |
-| `--quality` | `95` | qualidade do JPEG de saída (subamostragem 4:4:4) |
-| `--overwrite` | desligado | sobrescreve arquivos que já existem em `output/` |
+| `--strength` | `auto` | intensidade da correção: `auto` (medida em cada foto) ou um número fixo |
+| `--blur` | `auto` | desfoque da sombra: `auto` (medido, guiado pela abertura) ou um número fixo |
+| `--max-gain` | `0.4` | teto da correção em log (≈ +49% de brilho), para não "estourar" nenhum ponto |
+| `--quality` | `95` | qualidade do JPEG de saída (4:4:4) |
+| `--overwrite` | desligado | sobrescreve arquivos já existentes em `output/` |
+| `-v` | desligado | mostra, por foto, o zoom, o desfoque e a intensidade usados |
 
-Exemplo usando só inpainting, com Navier-Stokes e raio 3:
+Arquivos que não são imagens válidas, ou com resolução diferente da máscara, são pulados e listados no fim.
 
-```bash
-python fix_fungus.py process --method inpaint --algorithm ns --radius 3
-```
+## Como funciona
 
-Arquivos que não são imagens válidas, ou que têm resolução diferente da máscara, são pulados e listados no fim.
+### O defeito
 
-## O que a análise das fotos mostrou
+- **O fungo é uma sombra semitransparente.** A cena continua passando por ele, só que escurecida de 1% a 10%. A posição é fixa para cada zoom, mas a sombra fica **mais nítida e forte em F/8** e **mais espalhada e fraca em F/3.5**. Também varia com a luz da cena.
+- **A mancha marrom** em ~(2800, 1330), no zoom mínimo, absorve mais azul, então é corrigida por canal de cor.
+- **Os pixels quentes** (~20) são do sensor: iguais em qualquer zoom e em todas as fotos.
+- **O carimbo de data** da câmera é ignorado, porque é detectado pela cor laranja.
 
-1. **O fungo é uma sombra semitransparente, não um objeto opaco.** Os filamentos escurecem a cena em 2–10% e são largos e desfocados (dezenas de px), cobrindo boa parte do terço superior e do centro do quadro. A luz da cena continua passando por eles.
-2. **Os "pontos brancos" são pixels quentes do sensor**: cerca de 20 pontos de 1–3 px, alguns brancos e outros avermelhados. Aparecem em todas as fotos, em qualquer zoom.
-3. **O padrão é fixo nas coordenadas do sensor.** Por isso o script lê os pixels *sem* aplicar a rotação do EXIF (fotos em retrato têm `Orientation=8`). Aplicar a máscara na imagem girada a desalinharia.
-4. **Com o zoom, a sombra muda um pouco.** Em 5 mm ela fica mais nítida e se desloca até cerca de 20 px em relação a 26–37 mm. Por isso existe um mapa por faixa de zoom (`mask/zoom_5.0mm/`), escolhido pela distância focal no EXIF.
-5. **A câmera imprime a data na foto em uma posição fixa.** O detector de pixels quentes descarta esse carimbo porque os candidatos formam um aglomerado, e pixel quente é isolado.
+### A correção
 
-### Como a máscara é gerada (`fungusfix/mask.py`)
+1. **Mapa por zoom** (`mask/zoom_*mm/`), feito das fotos de calibração com maior F/ (sombra mais nítida), junto com uma tabela *abertura → (desfoque, intensidade)* medida nas próprias fotos de calibração.
+2. **Em cada foto**, o script lê zoom e abertura no EXIF, prevê o desfoque da sombra e **mede** desfoque e intensidade nas áreas lisas da própria foto. A intensidade também varia no espaço: onde a foto não mostra a sombra (textura, objeto na frente), a correção recua em vez de clarear um ponto que não estava escuro.
+3. **Correção flat-field:** cada pixel é multiplicado por `exp(k · desfoque(A))`, desfazendo a atenuação e recuperando a textura real sob o filamento. Isso é feito em duas passadas.
+4. **`cv2.inpaint`** (Telea/NS) só nos pixels quentes.
 
-- **Fungo:** em cada referência, calcula `log(imagem) − log(fundo local)` só nas regiões lisas (céu, parede) e faz a **mediana entre todas as fotos**. O conteúdo das cenas se cancela e sobra o padrão fixo. A binarização usa **limiar por histerese**: uma semente forte (0.02) mais crescimento conectado (0.008), que é o que segue filamentos longos e fracos sem pegar ruído solto.
-- **Pixels quentes:** um pixel precisa sobressair da mediana 7×7 em pelo menos 70% das referências, e o candidato precisa ser pequeno e isolado.
+`--method inpaint` aplica só o `cv2.inpaint` na máscara binária. Serve para comparar, mas em filamentos largos ele inventa conteúdo e borra ondas, folhagem e rostos.
 
-### Por que o método padrão é `hybrid` e não só `inpaint`
+### Resultado nas 21 fotos de referência
 
-`cv2.inpaint` *inventa* o conteúdo sob a máscara a partir das bordas. Isso funciona bem para defeitos pequenos e opacos, como os pixels quentes. Nos filamentos largos, que cobrem boa parte do quadro, o inpaint borra ondas, folhagem e rostos e deixa manchas no céu.
+Medida objetiva da sombra do fungo que continua visível, nas áreas lisas de cada foto:
 
-Como o fungo só atenua a luz, dá para **desfazer a atenuação** (*flat-field*): multiplicar cada pixel por `exp(A)`, onde `A` é a atenuação medida, recupera a textura original sob o filamento. A intensidade é ajustada por foto (`--strength auto`), porque abertura e zoom mudam o quanto a sombra escurece.
+| | Antes | Depois |
+|---|---|---|
+| Céu/mar (3134, 3135, 3151–3155) | 1.0–4.1% | 0.2–1.0% |
+| Jantar (3139–3147) | 1.5–4.1% | 0.6–2.9% |
+| **Média** | **2.36%** | **0.87%** |
 
-O modo `hybrid` combina os dois: flat-field no fungo e `cv2.inpaint` (Telea/NS, com o raio escolhido) nos pixels quentes e nos núcleos quase opacos do fungo.
+As fotos do jantar em F/3.5 com luz de lâmpada são as mais difíceis. Nelas ainda sobra parte da sombra no alto da parede.
 
-## Para melhorar a máscara
+## Preservação de metadados
 
-Hoje as referências lisas cobrem bem a metade superior do quadro e mal a inferior (areia e folhagem). O que mais melhoraria o resultado:
+O bloco EXIF da foto original é copiado **byte a byte** para a saída: data, ISO, abertura, velocidade, distância focal, orientação e o MakerNote da Canon. Ele não é remontado de propósito, porque reserializar o EXIF quebra os offsets internos do MakerNote. A única limitação é que a miniatura embutida (160 px) continua sendo a original.
 
-- Fotografar **um fundo liso e claro** (parede branca, céu sem nuvens, folha de papel bem perto da lente para ficar desfocada) **preenchendo o quadro inteiro**.
-- Repetir **em cada posição de zoom que você usa**, principalmente a grande angular (5 mm), e em 2–3 aberturas.
-- Colocar essas fotos em `reference/` e rodar `build-mask` de novo.
+As fotos são processadas na orientação do **sensor** (ignorando a tag Orientation), porque o defeito é fixo em relação ao sensor. A tag é mantida, então os visualizadores giram a foto normalmente.
 
 ## Estrutura
 
 ```
 fix_fungus.py          atalho para a CLI
 fungusfix/
-  imageio.py           leitura na orientação do sensor, escrita com EXIF/ICC copiados byte a byte
-  mask.py              geração da máscara (fungo + pixels quentes, grupos de zoom)
-  correct.py           inpaint / flat-field / híbrido
+  imageio.py           leitura na orientação do sensor; EXIF/ICC copiados byte a byte
+  model.py             modelo da sombra: resíduo por canal, ajuste de desfoque/intensidade
+  mask.py              geração da máscara (calibração por zoom, pixels quentes)
+  correct.py           flat-field / híbrido / inpaint
   cli.py               build-mask e process (tqdm, tratamento de erros)
-mask/                  máscara gerada (mask.png = máscara binária final)
-reference/             suas fotos de referência (não versionadas)
+mask/                  máscara gerada (mask.png = máscara binária; zoom_*mm/ = mapas por zoom)
+calibration/           fotos de campo branco (não versionadas)
+reference/             fotos de referência (não versionadas)
 ```
-
-## Preservação de metadados
-
-O bloco EXIF da foto original é copiado **byte a byte** para a saída, incluindo data, ISO, abertura, velocidade, distância focal, orientação e o MakerNote da Canon. Ele não é remontado de propósito: reserializar o EXIF quebra os offsets internos do MakerNote. A única limitação é que a miniatura embutida (160 px), que alguns visualizadores usam como prévia, continua sendo a original.

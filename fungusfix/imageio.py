@@ -103,3 +103,13 @@ def read_capture_time(path: Path) -> datetime | None:
         return datetime.strptime(str(value), "%Y:%m:%d %H:%M:%S") if value else None
     except Exception:  # noqa: BLE001
         return None
+
+
+def read_fnumber(path: Path) -> float | None:
+    """Abertura (F-number) do EXIF, ou ``None``."""
+    try:
+        with Image.open(path) as pil:
+            value = pil.getexif().get_ifd(ExifTags.IFD.Exif).get(ExifTags.Base.FNumber)
+        return float(value) if value else None
+    except Exception:  # noqa: BLE001
+        return None

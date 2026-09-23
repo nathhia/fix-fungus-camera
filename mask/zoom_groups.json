@@ -1,8 +1,12 @@
 {
   "group_ratio": 1.5,
+  "calibrated": true,
   "groups": {
     "zoom_5.0mm": 5.0,
-    "zoom_26.4mm": 26.408
+    "zoom_18.5mm": 18.521,
+    "zoom_28.7mm": 28.668,
+    "zoom_55.8mm": 55.778,
+    "zoom_80.0mm": 80.0
   },
   "analysis": {
     "scale": 0.25,
@@ -16,7 +20,8 @@
       4,
       6,
       8,
-      11
+      11,
+      14
     ]
   }
 }
