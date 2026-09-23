@@ -54,7 +54,7 @@ Arquivos que não são imagens válidas, ou com resolução diferente da máscar
 
 ### A correção
 
-1. **Mapa por zoom** (`mask/zoom_*mm/`), feito das fotos de calibração com maior F/ (sombra mais nítida), junto com uma tabela *abertura → (desfoque, intensidade)* medida nas próprias fotos de calibração.
+1. **Mapa por zoom** (`mask/zoom_*mm/`), feito das fotos de calibração em resolução total e, entre elas, as de maior F/ (sombra mais nítida), junto com uma tabela *abertura → (desfoque, intensidade)* medida nas próprias fotos de calibração.
 2. **Em cada foto**, o script lê zoom e abertura no EXIF, prevê o desfoque da sombra e **mede** desfoque e intensidade nas áreas lisas da própria foto. A intensidade também varia no espaço: onde a foto não mostra a sombra (textura, objeto na frente), a correção recua em vez de clarear um ponto que não estava escuro.
 3. **Correção flat-field:** cada pixel é multiplicado por `exp(k · desfoque(A))`, desfazendo a atenuação e recuperando a textura real sob o filamento. Isso é feito em duas passadas.
 4. **`cv2.inpaint`** (Telea/NS) só nos pixels quentes.
@@ -63,13 +63,13 @@ Arquivos que não são imagens válidas, ou com resolução diferente da máscar
 
 ### Resultado nas 21 fotos de referência
 
-Medida objetiva da sombra do fungo que continua visível, nas áreas lisas de cada foto:
+Medida objetiva da sombra do fungo que continua visível, nas áreas lisas de cada foto (medida com o mapa de calibração em resolução total):
 
 | | Antes | Depois |
 |---|---|---|
-| Céu/mar (3134, 3135, 3151–3155) | 1.0–4.1% | 0.2–1.0% |
-| Jantar (3139–3147) | 1.5–4.1% | 0.6–2.9% |
-| **Média** | **2.36%** | **0.87%** |
+| Céu/mar (3134, 3135, 3151–3155) | 1.0–4.0% | 0.2–1.1% |
+| Jantar (3139–3147) | 2.0–4.4% | 0.7–3.2% |
+| **Média** | **2.56%** | **1.11%** |
 
 As fotos do jantar em F/3.5 com luz de lâmpada são as mais difíceis. Nelas ainda sobra parte da sombra no alto da parede.
 

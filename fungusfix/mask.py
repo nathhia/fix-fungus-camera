@@ -202,6 +202,7 @@ class _Reference:
     time: datetime | None
     fnumber: float | None = None
     session: int = -1
+    full_resolution: bool = True
 
 
 def _assign_sessions(refs: list[_Reference], gap_minutes: float) -> int:
@@ -295,13 +296,16 @@ def _calibration_map(
 ) -> DefectMask:
     """Mapa a partir de fotos de calibração (campo branco desfocado) de um mesmo zoom.
 
-    Usa as fotos de maior F (sombra mais nítida): desfocar um mapa nítido para
+    Prefere fotos em resolução total (detalhe fino dos filamentos) e, entre
+    elas, as de maior F (sombra mais nítida): desfocar um mapa nítido para
     casar com uma foto em F/3.5 funciona; o contrário não.
     """
-    fmax = max((r.fnumber or 0.0) for r in members)
-    sharp = [r for r in members if (r.fnumber or 0.0) >= fmax - p.sharp_fnumber_margin]
+    full = [r for r in members if r.full_resolution]
+    pool = full if len(full) >= 2 else members
+    fmax = max((r.fnumber or 0.0) for r in pool)
+    sharp = [r for r in pool if (r.fnumber or 0.0) >= fmax - p.sharp_fnumber_margin]
     if len(sharp) < 2:
-        sharp = members
+        sharp = pool
     stack = np.stack([r.residual for r in sharp])
     images = np.sum(~np.isnan(stack[..., 0]), axis=0)
     a = np.nan_to_num(-_nanmedian(stack), nan=0.0).astype(np.float32)
@@ -489,7 +493,16 @@ def _build_from_calibration(
         if flat < 0.3:
             log.info("%s ignorada: só %.0f%% de área lisa (textura, cena ou escura demais)", path.name, 100 * flat)
             continue
-        cal.append(_Reference(path.name, r, read_focal_length(path), read_capture_time(path), read_fnumber(path)))
+        cal.append(
+            _Reference(
+                path.name,
+                r,
+                read_focal_length(path),
+                read_capture_time(path),
+                read_fnumber(path),
+                full_resolution=img.shape[:2] == shape,
+            )
+        )
     if not cal:
         raise ValueError(f"nenhuma foto de calibração utilizável em {calibration_dir}")
 
