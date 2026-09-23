@@ -54,6 +54,7 @@ class CorrectionParams:
     sigma_window: float = 3.0  # com calibração: σ buscado só até ±isto em volta do previsto pela abertura
     max_k_factor: float = 4.0  # k medido limitado a este múltiplo do esperado (acima disso é cena, não sombra)
     passes: int = 2  # repete medir+corrigir: a 2ª passada pega a sombra que a 1ª subestimou
+    per_channel: bool = True  # intensidade medida separadamente em B, G e R
 
 
 @dataclass(frozen=True)
@@ -124,9 +125,15 @@ def _flatfield_pass(
     else:
         # Medida confiável: usa, mas limitada a um múltiplo do esperado (k alto demais = cena, não sombra).
         k = min(_shrink(fit), params.max_k_factor * k_exp + 0.25) if measured else params.unreliable_fraction * k_exp
-        k_field = strength_field(res, a, k)
+        if params.per_channel:
+            # A cor da sombra depende da luz da cena (a mancha marrom rouba mais azul sob céu azul do que
+            # sob luz de lâmpada): mede a intensidade por canal e por região, puxada para o k de luminância.
+            k_field = np.dstack([strength_field(res[..., c], a[..., c], k) for c in range(3)])
+        else:
+            k_field = strength_field(res, a, k)
 
-    log_gain = np.minimum(k_field[..., None] * a, params.max_gain)
+    k3 = k_field if k_field.ndim == 3 else k_field[..., None]
+    log_gain = np.minimum(k3 * a, params.max_gain)
     h, w = img_bgr.shape[:2]
     gain = cv2.resize(np.exp(log_gain), (w, h), interpolation=cv2.INTER_CUBIC)
     out = np.clip(img_bgr.astype(np.float32) * gain + 0.5, 0, 255).astype(np.uint8)

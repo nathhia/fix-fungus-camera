@@ -57,6 +57,7 @@ Arquivos que não são imagens válidas, ou com resolução diferente da máscar
 1. **Mapa por zoom** (`mask/zoom_*mm/`), feito das fotos de calibração em resolução total e, entre elas, as de maior F/ (sombra mais nítida), junto com uma tabela *abertura → (desfoque, intensidade)* medida nas próprias fotos de calibração.
 2. **Em cada foto**, o script lê zoom e abertura no EXIF, prevê o desfoque da sombra e **mede** desfoque e intensidade nas áreas lisas da própria foto. A intensidade também varia no espaço: onde a foto não mostra a sombra (textura, objeto na frente), a correção recua em vez de clarear um ponto que não estava escuro.
 3. **Correção flat-field:** cada pixel é multiplicado por `exp(k · desfoque(A))`, desfazendo a atenuação e recuperando a textura real sob o filamento. Isso é feito em duas passadas.
+   A intensidade `k` é medida **por canal de cor**: a cor da sombra depende da luz da cena (sob céu azul, a mancha marrom rouba bem mais azul do que na calibração feita com luz quente).
 4. **`cv2.inpaint`** (Telea/NS) só nos pixels quentes.
 
 `--method inpaint` aplica só o `cv2.inpaint` na máscara binária. Serve para comparar, mas em filamentos largos ele inventa conteúdo e borra ondas, folhagem e rostos.
