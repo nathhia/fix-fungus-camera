@@ -60,7 +60,7 @@ class CorrectionParams:
     strength: float | None = None  # None = automático por foto; número = intensidade fixa
     blur: float | None = None  # None = automático; número = desfoque fixo (px de análise)
     max_gain: float = 0.4  # teto da correção em log (e^0.4 ≈ +49%), evita "estourar" um ponto
-    unreliable_fraction: float = 0.5  # sem área lisa para medir: usa esta fração da intensidade típica
+    unreliable_fraction: float = 1.0  # sem área lisa para medir: usa esta fração da intensidade típica (banco com gabarito: 1.0 > 0.5)
     sigma_window: float = 3.0  # com calibração: σ buscado só até ±isto em volta do previsto pela abertura
     max_k_factor: float = 4.0  # k medido limitado a este múltiplo do esperado (acima disso é cena, não sombra)
     passes: int = 2  # repete medir+corrigir: a 2ª passada pega a sombra que a 1ª subestimou
