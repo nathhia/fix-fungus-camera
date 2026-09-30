@@ -60,9 +60,15 @@ class CorrectionParams:
     strength: float | None = None  # None = automático por foto; número = intensidade fixa
     blur: float | None = None  # None = automático; número = desfoque fixo (px de análise)
     max_gain: float = 0.4  # teto da correção em log (e^0.4 ≈ +49%), evita "estourar" um ponto
-    unreliable_fraction: float = 1.0  # sem área lisa para medir: usa esta fração da intensidade típica (banco com gabarito: 1.0 > 0.5)
+    unreliable_fraction: float = 1.0  # sem área lisa: fração da intensidade típica (banco com gabarito: 1.0 > 0.5)
     sigma_window: float = 3.0  # com calibração: σ buscado só até ±isto em volta do previsto pela abertura
     max_k_factor: float = 4.0  # k medido limitado a este múltiplo do esperado (acima disso é cena, não sombra)
+    # Região sem área lisa recebe esta fração do k da foto. Foto com textura (folhagem, jantar) perde
+    # sombra demais com 0.5 (banco com gabarito: 0.75 melhora 14 de 15); em foto lisa (céu), 0.75 já
+    # passa do ponto nos filamentos, então fica 0.5.
+    field_prior: float = 0.5
+    field_prior_textured: float = 0.75
+    textured_below: float = 0.3  # fração da foto com área lisa abaixo da qual ela é "com textura"
     passes: int = 2  # repete medir+corrigir: a 2ª passada pega a sombra que a 1ª subestimou
     per_channel: bool = True  # intensidade medida separadamente em B, G e R
     broad_brightness_matched: bool = True  # manchas largas: só corrige com evidência de brilho parecido
@@ -142,12 +148,14 @@ def _flatfield_pass(
     else:
         # Medida confiável: usa, mas limitada a um múltiplo do esperado (k alto demais = cena, não sombra).
         k = min(_shrink(fit), params.max_k_factor * k_exp + 0.25) if measured else params.unreliable_fraction * k_exp
+        flat = float((~np.isnan(res[..., 0])).mean())
+        prior = params.field_prior_textured if flat < params.textured_below else params.field_prior
         if params.per_channel:
             # A cor da sombra depende da luz da cena (a mancha marrom rouba mais azul sob céu azul do que
             # sob luz de lâmpada): mede a intensidade por canal e por região, puxada para o k de luminância.
-            k_field = np.dstack([strength_field(res[..., c], a[..., c], k) for c in range(3)])
+            k_field = np.dstack([strength_field(res[..., c], a[..., c], k, prior_fraction=prior) for c in range(3)])
         else:
-            k_field = strength_field(res, a, k)
+            k_field = strength_field(res, a, k, prior_fraction=prior)
 
     k3 = k_field if k_field.ndim == 3 else k_field[..., None]
     if params.strength is None and params.broad_brightness_matched:

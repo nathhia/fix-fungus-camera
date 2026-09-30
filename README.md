@@ -66,7 +66,7 @@ Arquivos que não são imagens válidas são pulados e listados no fim.
 ### A correção
 
 1. **Mapa por zoom** (`mask/zoom_*mm/`), feito das fotos de calibração em resolução total e, entre elas, as de maior F/ (sombra mais nítida), junto com uma tabela *abertura → (desfoque, intensidade)* medida nas próprias fotos de calibração.
-2. **Em cada foto**, o script lê zoom e abertura no EXIF, prevê o desfoque da sombra e **mede** desfoque e intensidade nas áreas lisas da própria foto. Sem área lisa para medir (folhagem, cena muito texturizada), usa a intensidade da calibração para aquela abertura. A intensidade também varia no espaço: onde a foto não mostra a sombra (textura, objeto na frente), a correção recua em vez de clarear um ponto que não estava escuro.
+2. **Em cada foto**, o script lê zoom e abertura no EXIF, prevê o desfoque da sombra e **mede** desfoque e intensidade nas áreas lisas da própria foto. Sem área lisa para medir (folhagem, cena muito texturizada), usa a intensidade da calibração para aquela abertura. A intensidade também varia no espaço: onde a foto não mostra a sombra (textura, objeto na frente), a correção recua em vez de clarear um ponto que não estava escuro. Quanto ela recua depende do tipo de foto: em fotos com pouca área lisa (folhagem, jantar, quarto), as regiões sem medida recebem 75% da intensidade da foto; em fotos com muita área lisa (céu, parede), 50%, porque ali 75% já deixa os filamentos claros demais.
 3. **Correção flat-field:** cada pixel é multiplicado por `exp(k · desfoque(A))`, desfazendo a atenuação e recuperando a textura real sob o filamento. Isso é feito em duas passadas.
    A intensidade `k` é medida **por canal de cor**: a cor da sombra depende da luz da cena (sob céu azul, a mancha marrom rouba bem mais azul do que na calibração feita com luz quente).
    Para medir a sombra, cada pixel é comparado com o **fundo local calculado só entre vizinhos de brilho parecido**, para que o céu claro não faça o mar logo abaixo do horizonte (ou uma parede clara, o móvel escuro ao lado) parecer sombreado.
@@ -83,8 +83,8 @@ Medida objetiva da sombra do fungo que continua visível, nas áreas lisas de ca
 | | Antes | Depois |
 |---|---|---|
 | Céu/mar (3134, 3135, 3151–3155) | 1.0–3.3% | 0.0–0.7% |
-| Jantar (3139–3147) | 1.8–3.1% | 0.7–2.3% |
-| **Média** | **2.20%** | **0.79%** |
+| Jantar (3139–3147) | 1.8–3.1% | 0.7–2.2% |
+| **Média** | **2.20%** | **0.78%** |
 
 As fotos do jantar em F/3.5 com luz de lâmpada são as mais difíceis. Nelas ainda sobra parte da sombra no alto da parede.
 
