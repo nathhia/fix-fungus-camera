@@ -41,7 +41,18 @@ Sem `calibration/`, o script tenta estimar o fungo só pelas áreas lisas das fo
 | `--overwrite` | desligado | sobrescreve arquivos já existentes em `output/` |
 | `-v` | desligado | mostra, por foto, o zoom, o desfoque e a intensidade usados |
 
-Arquivos que não são imagens válidas, ou com resolução diferente da máscara, são pulados e listados no fim.
+Arquivos que não são imagens válidas são pulados e listados no fim.
+
+**Qualquer formato da câmera funciona**, sem configurar nada. O script identifica pela própria foto e pelo EXIF (`DigitalZoomRatio`) que parte do sensor ela mostra, e corrige com o mapa recortado exatamente nessa parte:
+
+| Foto | Parte do sensor | Sombra que sobra* |
+|---|---|---|
+| 4:3 em resolução total (L) | sensor inteiro | 35% |
+| 16:9, 3:2, 1:1 | recorte centrado | 22–33% |
+| M1/M2/S (resolução menor) | sensor inteiro, reduzido | 34–35% |
+| zoom digital 1.5×, 2× | recorte centrado menor, ampliado | 27–31% |
+
+\* média em 8 fotos de referência convertidas para cada formato. Os valores estão no mesmo nível do quadro inteiro, ou seja, os formatos são corrigidos tão bem quanto ele.
 
 ## Como funciona
 
@@ -67,13 +78,13 @@ Arquivos que não são imagens válidas, ou com resolução diferente da máscar
 
 ### Resultado nas 21 fotos de referência
 
-Medida objetiva da sombra do fungo que continua visível, nas áreas lisas de cada foto (com o mapa de calibração em resolução total e o fundo local que respeita bordas). O processamento leva ~15 s por foto.
+Medida objetiva da sombra do fungo que continua visível, nas áreas lisas de cada foto (com o mapa de calibração em resolução total e o fundo local que respeita bordas). Cada foto leva ~20 s. As fotos são corrigidas em paralelo, e o script escolhe sozinho quantas de cada vez pelos núcleos e pela memória livre (~1,5 GB por foto). Com 4 núcleos, um lote de 4 fotos leva ~25 s.
 
 | | Antes | Depois |
 |---|---|---|
 | Céu/mar (3134, 3135, 3151–3155) | 1.0–3.3% | 0.0–0.7% |
 | Jantar (3139–3147) | 1.8–3.1% | 0.7–2.3% |
-| **Média** | **2.20%** | **0.77%** |
+| **Média** | **2.20%** | **0.79%** |
 
 As fotos do jantar em F/3.5 com luz de lâmpada são as mais difíceis. Nelas ainda sobra parte da sombra no alto da parede.
 
@@ -97,3 +108,12 @@ mask/                  máscara gerada (mask.png = máscara binária; zoom_*mm/ 
 calibration/           fotos de campo branco (não versionadas)
 reference/             fotos de referência (não versionadas)
 ```
+
+## Testes
+
+```bash
+pip install pytest
+python -m pytest tests
+```
+
+Os testes conferem, com uma sombra sintética, que cada formato (quadro inteiro, 16:9, 1:1, resolução menor, zoom digital) é corrigido no lugar certo, e que o EXIF é preservado.

@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import cv2
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from .correct import CorrectionParams, InpaintAlgorithm, Method, correct_image
-from .imageio import ImageReadError, read_fnumber, read_focal_length, read_image, write_image
+from .correct import CorrectionParams, InpaintAlgorithm, Method
+from .geometry import UnsupportedFrame, correct_frame
+from .imageio import ImageReadError, read_digital_zoom, read_fnumber, read_focal_length, read_image, write_image
 from .mask import MaskParams, MaskSet, build_mask
 from .model import AnalysisParams
 
@@ -26,6 +30,61 @@ class BatchReport:
     failed: list[tuple[str, str]] = field(default_factory=list)
 
 
+PHOTO_MEMORY = 1_600_000_000  # pico medido por foto de 16 MP (~1,3 GB) com folga
+
+
+def worker_count(n_files: int) -> int:
+    """Quantas fotos corrigir ao mesmo tempo: limitado pelos núcleos e pela memória livre."""
+    cpus = os.cpu_count() or 1
+    try:
+        free = os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+        by_memory = int(free // PHOTO_MEMORY)
+    except (AttributeError, ValueError, OSError):  # sem essa informação (Windows/macOS): conservador
+        by_memory = 2
+    return max(1, min(cpus, by_memory, n_files))
+
+
+@dataclass(frozen=True)
+class _Job:
+    masks: MaskSet
+    params: CorrectionParams
+    analysis: AnalysisParams
+    jpeg_quality: int
+
+
+_job: _Job | None = None
+
+
+def _init_worker(job: _Job) -> None:
+    global _job
+    _job = job
+    cv2.setNumThreads(1)  # o paralelismo já vem dos processos; threads extras só disputam os núcleos
+
+
+def _process_one(src: Path, dst: Path) -> tuple[str, str]:
+    """Corrige uma foto. Retorna (situação, detalhe): 'done', 'skipped' ou 'failed'."""
+    assert _job is not None
+    try:
+        img = read_image(src)
+    except ImageReadError as exc:
+        return "skipped", str(exc)
+    try:
+        dm, group = _job.masks.select(read_focal_length(src))
+        try:
+            out, info, frame = correct_frame(
+                img, dm, _job.params, _job.analysis, read_fnumber(src), read_digital_zoom(src)
+            )
+        except UnsupportedFrame as exc:
+            return "skipped", str(exc)
+        write_image(dst, out, src, jpeg_quality=_job.jpeg_quality)
+    except Exception as exc:  # noqa: BLE001 - um arquivo ruim não interrompe o lote
+        return "failed", repr(exc)
+    if info is None:
+        return "done", f"zoom={group} quadro={frame}"
+    used = "medida" if info.measured else "típica"
+    return "done", f"zoom={group} quadro={frame} desfoque={info.sigma:.0f} intensidade={info.k:.2f} ({used})"
+
+
 def process_batch(
     input_dir: Path,
     output_dir: Path,
@@ -34,44 +93,51 @@ def process_batch(
     analysis: AnalysisParams,
     jpeg_quality: int = 95,
     overwrite: bool = False,
+    workers: int | None = None,
 ) -> BatchReport:
     report = BatchReport()
-    files = [p for p in sorted(input_dir.iterdir()) if p.is_file()]
     output_dir.mkdir(parents=True, exist_ok=True)
+    todo: list[Path] = []
+    for src in sorted(p for p in input_dir.iterdir() if p.is_file()):
+        if (output_dir / src.name).exists() and not overwrite:
+            report.skipped.append((src.name, "já existe na saída (use --overwrite)"))
+        else:
+            todo.append(src)
+    if not todo:
+        return report
 
-    with logging_redirect_tqdm():
-        for src in tqdm(files, desc="Corrigindo fotos", unit="img"):
-            dst = output_dir / src.name
-            if dst.exists() and not overwrite:
-                report.skipped.append((src.name, "já existe na saída (use --overwrite)"))
-                continue
+    job = _Job(masks, params, analysis, jpeg_quality)
+    n = workers or worker_count(len(todo))
+    log.debug("%d foto(s), %d em paralelo", len(todo), n)
+
+    def record(src: Path, status: str, detail: str) -> None:
+        if status == "done":
+            report.done.append(src.name)
+            log.debug("%s: %s", src.name, detail)
+        elif status == "skipped":
+            report.skipped.append((src.name, detail))
+            log.warning("pulando %s: %s", src.name, detail)
+        else:
+            report.failed.append((src.name, detail))
+            log.error("falha em %s: %s", src.name, detail)
+
+    with logging_redirect_tqdm(), tqdm(total=len(todo), desc="Corrigindo fotos", unit="img") as bar:
+        if n == 1:
+            global _job
+            previous, _job = _job, job
             try:
-                img = read_image(src)
-            except ImageReadError as exc:
-                report.skipped.append((src.name, str(exc)))
-                log.warning("pulando %s: não é uma imagem válida", src.name)
-                continue
-            try:
-                dm, group = masks.select(read_focal_length(src))
-                if img.shape[:2] != dm.shape:
-                    report.skipped.append((src.name, f"resolução {img.shape[1]}x{img.shape[0]} != máscara"))
-                    log.warning("pulando %s: resolução diferente da máscara", src.name)
-                    continue
-                out, info = correct_image(img, dm, params, analysis, read_fnumber(src))
-                write_image(dst, out, src, jpeg_quality=jpeg_quality)
-                if info is not None:
-                    log.debug(
-                        "%s: zoom=%s desfoque=%.0f intensidade=%.2f (%s)",
-                        src.name,
-                        group,
-                        info.sigma,
-                        info.k,
-                        "medida" if info.measured else "típica",
-                    )
-                report.done.append(src.name)
-            except Exception as exc:  # noqa: BLE001 - um arquivo ruim não interrompe o lote
-                report.failed.append((src.name, repr(exc)))
-                log.error("falha em %s: %s", src.name, exc)
+                for src in todo:
+                    record(src, *_process_one(src, output_dir / src.name))
+                    bar.update()
+            finally:
+                _job = previous
+        else:
+            with ProcessPoolExecutor(n, initializer=_init_worker, initargs=(job,)) as pool:
+                futures = {pool.submit(_process_one, src, output_dir / src.name): src for src in todo}
+                for fut in as_completed(futures):
+                    record(futures[fut], *fut.result())
+                    bar.update()
+    report.done.sort()
     return report
 
 

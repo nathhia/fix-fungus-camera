@@ -113,3 +113,13 @@ def read_fnumber(path: Path) -> float | None:
         return float(value) if value else None
     except Exception:  # noqa: BLE001
         return None
+
+
+def read_digital_zoom(path: Path) -> float:
+    """Fator de zoom digital do EXIF (1.0 = sem zoom digital ou ausente)."""
+    try:
+        with Image.open(path) as pil:
+            value = pil.getexif().get_ifd(ExifTags.IFD.Exif).get(ExifTags.Base.DigitalZoomRatio)
+        return float(value) if value else 1.0
+    except Exception:  # noqa: BLE001
+        return 1.0

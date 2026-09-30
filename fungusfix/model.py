@@ -15,6 +15,8 @@ suficiente para uma sombra desfocada e muito mais rápida.
 
 from __future__ import annotations
 
+import warnings
+
 from dataclasses import dataclass
 
 import cv2
@@ -149,7 +151,9 @@ def fit_shadow(
     A incerteza de k considera que pixels vizinhos são correlacionados
     (cada "amostra independente" ~ 5x5 px de análise).
     """
-    r = np.nanmean(res, axis=2) if res.ndim == 3 else res
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # pixels com textura são NaN em todos os canais: esperado
+        r = np.nanmean(res, axis=2) if res.ndim == 3 else res
     a_lum = a.mean(axis=2) if a.ndim == 3 else a
     # Mesmo conjunto de pixels para todos os σ (o suporte do mapa mais espalhado), senão os erros não se comparam.
     v = ~np.isnan(r) & (blur_map(a_lum, max(p.blur_sigmas)) > support)
