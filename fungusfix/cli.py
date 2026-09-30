@@ -8,12 +8,9 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import cv2
-import numpy as np
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from .config import ConfigError, Settings, load_settings
 from .correct import CorrectionParams, InpaintAlgorithm, Method, correct_image
 from .imageio import ImageReadError, read_fnumber, read_focal_length, read_image, write_image
 from .mask import MaskParams, MaskSet, build_mask
@@ -37,12 +34,8 @@ def process_batch(
     analysis: AnalysisParams,
     jpeg_quality: int = 95,
     overwrite: bool = False,
-    settings: Settings | None = None,
-    debug_dir: Path | None = None,
 ) -> BatchReport:
     report = BatchReport()
-    if debug_dir is not None:
-        debug_dir.mkdir(parents=True, exist_ok=True)
     files = [p for p in sorted(input_dir.iterdir()) if p.is_file()]
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -64,11 +57,8 @@ def process_batch(
                     report.skipped.append((src.name, f"resolução {img.shape[1]}x{img.shape[0]} != máscara"))
                     log.warning("pulando %s: resolução diferente da máscara", src.name)
                     continue
-                p, a = settings.resolve(src.name, params, analysis) if settings else (params, analysis)
-                out, info = correct_image(img, dm, p, a, read_fnumber(src))
+                out, info = correct_image(img, dm, params, analysis, read_fnumber(src))
                 write_image(dst, out, src, jpeg_quality=jpeg_quality)
-                if debug_dir is not None:
-                    _write_debug(debug_dir / f"{src.stem}_alteracao.jpg", img, out)
                 if info is not None:
                     log.debug(
                         "%s: zoom=%s desfoque=%.0f intensidade=%.2f (%s)",
@@ -83,21 +73,6 @@ def process_batch(
                 report.failed.append((src.name, repr(exc)))
                 log.error("falha em %s: %s", src.name, exc)
     return report
-
-
-def _write_debug(path: Path, before: np.ndarray, after: np.ndarray) -> None:
-    """Mapa do que a correção mudou: vermelho = clareou, azul = escureceu (escala ±5%), sobre a foto em cinza."""
-    w = 1152
-    h = round(before.shape[0] * w / before.shape[1])
-    b = cv2.resize(before, (w, h), interpolation=cv2.INTER_AREA).astype(np.float32)
-    a = cv2.resize(after, (w, h), interpolation=cv2.INTER_AREA).astype(np.float32)
-    change = (np.log(a + 1.0) - np.log(b + 1.0)).mean(axis=2)
-    t = np.clip(change / 0.05, -1.0, 1.0)
-    gray = cv2.cvtColor(b.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32) * 0.5 + 64
-    vis = np.dstack([gray, gray, gray])
-    vis[..., 2] += np.clip(t, 0, 1) * 160  # vermelho: clareou
-    vis[..., 0] += np.clip(-t, 0, 1) * 160  # azul: escureceu
-    cv2.imwrite(str(path), np.clip(vis, 0, 255).astype(np.uint8), [cv2.IMWRITE_JPEG_QUALITY, 90])
 
 
 def _cmd_build_mask(args: argparse.Namespace) -> int:
@@ -144,38 +119,9 @@ def _cmd_process(args: argparse.Namespace) -> int:
         algorithm=InpaintAlgorithm(args.algorithm),
         inpaint_radius=args.radius,
         strength=None if args.strength == "auto" else float(args.strength),
+        blur=None if args.blur == "auto" else float(args.blur),
+        max_gain=args.max_gain,
     )
-    cli: dict[str, dict[str, object]] = {}
-
-    def put(section: str, key: str, value: object) -> None:
-        cli.setdefault(section, {})[key] = value
-
-    if args.blur != "auto":
-        put("teia", "desfoque", float(args.blur))
-    if args.max_gain is not None:
-        put("geral", "teto_ganho", args.max_gain)
-    if args.forca_teia is not None:
-        put("teia", "forca", args.forca_teia)
-    if args.forca_mancha is not None:
-        put("mancha", "forca", args.forca_mancha)
-    if args.teto_mancha is not None:
-        put("mancha", "teto", args.teto_mancha)
-    if args.paredes_escuras:
-        put("teia", "paredes_escuras", True)
-    if args.sem_ajuste_mancha:
-        put("mancha", "ajuste_final", False)
-    if args.sem_pixels_quentes:
-        put("pixels_quentes", "corrigir", False)
-    config = args.config
-    if config is None and Path("fungusfix.toml").exists():
-        config = Path("fungusfix.toml")
-    try:
-        settings = load_settings(config, args.preset, cli)
-    except (ConfigError, OSError, ValueError) as exc:
-        log.error("configuração inválida: %s", exc)
-        return 2
-    if config is not None:
-        log.info("usando configuração de %s", config)
     log.info(
         "método=%s algoritmo=%s raio=%d intensidade=%s",
         params.method.value,
@@ -184,10 +130,7 @@ def _cmd_process(args: argparse.Namespace) -> int:
         args.strength,
     )
 
-    debug_dir = args.output / "_debug" if args.debug else None
-    report = process_batch(
-        args.input, args.output, masks, params, analysis, args.quality, args.overwrite, settings, debug_dir
-    )
+    report = process_batch(args.input, args.output, masks, params, analysis, args.quality, args.overwrite)
 
     log.info(
         "concluído: %d corrigidas, %d puladas, %d com erro", len(report.done), len(report.skipped), len(report.failed)
@@ -271,21 +214,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--max-gain",
         type=float,
-        default=None,
+        default=CorrectionParams.max_gain,
         help=f"teto da correção em log (padrão {CorrectionParams.max_gain} ≈ +49%%)",
     )
-    g = p.add_argument_group("ajustes por defeito (também podem ir no arquivo fungusfix.toml)")
-    g.add_argument("--config", type=Path, help="arquivo de configuração (padrão: ./fungusfix.toml, se existir)")
-    g.add_argument("--preset", choices=["suave", "padrao", "maximo"], help="predefinição de ajustes")
-    g.add_argument("--forca-teia", type=float, help="fração da correção da teia: 0 = não corrige, 1 = completa")
-    g.add_argument("--forca-mancha", type=float, help="fração da correção da mancha marrom/branca (0 a 2)")
-    g.add_argument("--teto-mancha", type=float, help="limita a intensidade da mancha a N vezes a da foto (ex. 1.0)")
-    g.add_argument(
-        "--paredes-escuras", action="store_true", help="desconta o ruído do sensor para medir paredes sob lâmpada"
-    )
-    g.add_argument("--sem-ajuste-mancha", action="store_true", help="desliga o ajuste final da mancha")
-    g.add_argument("--sem-pixels-quentes", action="store_true", help="não remove os pixels quentes do sensor")
-    g.add_argument("--debug", action="store_true", help="salva em saída/_debug um mapa do que foi alterado")
     p.add_argument("--quality", type=int, default=95, help="qualidade JPEG de saída (padrão 95)")
     p.add_argument("--overwrite", action="store_true", help="sobrescreve arquivos já existentes na saída")
     p.set_defaults(func=_cmd_process)

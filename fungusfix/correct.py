@@ -70,10 +70,6 @@ class CorrectionParams:
     touchup_min: float = 0.02  # atenuação (log, desfocada) que define uma mancha larga para o ajuste final
     touchup_ring: int = 20  # vizinhança (px de análise) usada como referência no ajuste final
     touchup_max: float = 0.08  # teto do ajuste final, em log (≈ ±8%)
-    broad_k_factor: float | None = None  # teto da intensidade das manchas largas (múltiplo do k da foto); None = sem teto
-    thin_scale: float = 1.0  # fração da correção aplicada na teia (filamentos): 0 = não corrige, 1 = completa
-    broad_scale: float = 1.0  # fração da correção aplicada nas manchas largas (a marrom/branca)
-    hot_pixels: bool = True  # remove os pixels quentes do sensor (cv2.inpaint)
 
 
 @dataclass(frozen=True)
@@ -121,11 +117,9 @@ def correct_image(
     passes = 1 if params.strength is not None else max(1, params.passes)
     for _ in range(passes):
         out, info = _flatfield_pass(out, dm, params, analysis, fnumber)
-    if params.strength is None and params.broad_touchup and params.broad_scale > 0 and info is not None:
+    if params.strength is None and params.broad_touchup and info is not None:
         out = _broad_touchup(out, dm, params, analysis, info.sigma)
-    if info is not None and (params.thin_scale != 1.0 or params.broad_scale != 1.0):
-        out = _scale_by_defect(img_bgr, out, dm, info.sigma, params.thin_scale, params.broad_scale)
-    if params.method is Method.HYBRID and params.hot_pixels and dm.hotpixel_mask.any():
+    if params.method is Method.HYBRID and dm.hotpixel_mask.any():
         out = cv2.inpaint(out, dm.hotpixel_mask, params.inpaint_radius, params.algorithm.cv_flag)
     return out, info
 
@@ -163,10 +157,6 @@ def _flatfield_pass(
         small = cv2.resize(img_bgr, (a.shape[1], a.shape[0]), interpolation=cv2.INTER_AREA).astype(np.float32)
         log_lum = cv2.GaussianBlur(np.log(small.mean(axis=2) + 1.0), (0, 0), 3)
         k_broad = np.dstack([brightness_matched_strength(res[..., c], broad[..., c], log_lum) for c in range(3)])
-        if params.broad_k_factor is not None:
-            # Com pouca evidência numa faixa de brilho a estimativa pode disparar (3-4x o k da foto) e a
-            # mancha virar um ponto claro. Negativo continua permitido: sobre fundo escuro o véu clareia.
-            k_broad = np.clip(k_broad, -(k + 0.25), params.broad_k_factor * k + 0.25)
         log_gain = k3 * thin + k_broad * broad
     else:
         log_gain = k3 * a
@@ -221,24 +211,3 @@ def _broad_touchup(
     h, w = img_bgr.shape[:2]
     gain = cv2.resize(np.exp(log_gain), (w, h), interpolation=cv2.INTER_CUBIC)
     return np.clip(img_bgr.astype(np.float32) * gain + 0.5, 0, 255).astype(np.uint8)
-
-
-def _scale_by_defect(
-    original: np.ndarray, corrected: np.ndarray, dm: DefectMask, sigma: float, thin_scale: float, broad_scale: float
-) -> np.ndarray:
-    """Aplica só uma fração da correção, separada entre teia e manchas largas.
-
-    A correção completa (todas as passadas) vira um ganho em log por pixel; cada pixel recebe a
-    fração da teia ou da mancha conforme o que o mapa diz que há ali. Assim "0.5" é exatamente
-    metade da correção, e não metade em cada passada.
-    """
-    thin, broad = split_broad_component(blur_map(dm.fungus_map, sigma))
-    t, b = thin.mean(axis=2), broad.mean(axis=2)
-    w_broad = b / np.maximum(t + b, 1e-6)
-    scale = thin_scale * (1.0 - w_broad) + broad_scale * w_broad
-    h, w = original.shape[:2]
-    scale = cv2.resize(scale.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)[..., None]
-    lo = np.log(original.astype(np.float32) + 1.0)
-    lc = np.log(corrected.astype(np.float32) + 1.0)
-    out = np.exp(lo + scale * (lc - lo)) - 1.0
-    return np.clip(out + 0.5, 0, 255).astype(np.uint8)

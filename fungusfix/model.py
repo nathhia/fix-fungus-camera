@@ -28,7 +28,6 @@ class AnalysisParams:
     flat_texture_max: float = 0.022  # textura fina máxima (log) para considerar a região lisa
     blur_sigmas: tuple[float, ...] = (0, 1, 2, 3, 4, 6, 8, 11, 14)  # desfoques testados (px de análise)
     edge_bin_width: float = 0.3  # fundo local respeita bordas: faixas de brilho em log (0 = desliga)
-    noise_cap: float = 0.0  # desconta o ruído do sensor da textura (paredes escuras sob lâmpada); 0 = desliga
 
 
 def _normalized_blur(values: np.ndarray, weight: np.ndarray, sigma: float) -> np.ndarray:
@@ -75,16 +74,7 @@ def residual_and_texture(
 
     # Textura numa escala menor que a sombra: céu/parede ~ 0, folhagem >> 0.
     fine = lum - cv2.GaussianBlur(lum, (0, 0), 1.5)
-    tex2 = cv2.GaussianBlur(fine * fine, (0, 0), 6)
-    c = 0.0
-    if p.noise_cap > 0:
-        # Em log, o ruído cresce nas áreas escuras (≈ c/brilho) e faz uma parede lisa sob luz de
-        # lâmpada parecer textura. c vem da envoltória inferior da foto, com teto para a textura
-        # de folhagem não ser confundida com ruído.
-        bright = gray > 30
-        if bright.any():
-            c = min(float(np.percentile((tex2 * gray)[bright], 2)), p.noise_cap)
-    texture = np.sqrt(np.maximum(tex2 - c / np.maximum(gray, 1.0), 0.0))
+    texture = np.sqrt(cv2.GaussianBlur(fine * fine, (0, 0), 6))
     flat = (texture < p.flat_texture_max) & (gray > 30) & (small.max(axis=2) < 250) & ~date_stamp_mask(small)
     flat = cv2.erode(flat.astype(np.uint8), np.ones((9, 9), np.uint8)).astype(np.float32)
 
