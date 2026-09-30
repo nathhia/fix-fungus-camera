@@ -179,6 +179,7 @@ def strength_field(
     tile: int = 40,
     prior_fraction: float = 0.5,
     prior_weight: float = 0.3,
+    local_offset: bool = False,
 ) -> np.ndarray:
     """Intensidade k variando no espaço, estimada em janelas de ``tile`` px (escala de análise).
 
@@ -194,6 +195,12 @@ def strength_field(
     box = (tile, tile)
     sxy = cv2.boxFilter(w * x * y, -1, box, normalize=False)
     sxx = cv2.boxFilter(w * x * x, -1, box, normalize=False)
+    if local_offset:  # contraste contra os vizinhos: uma sombra da cena na janela não vira "fungo"
+        sw = np.maximum(cv2.boxFilter(w, -1, box, normalize=False), 1e-6)
+        sx = cv2.boxFilter(w * x, -1, box, normalize=False)
+        sy = cv2.boxFilter(w * y, -1, box, normalize=False)
+        sxy = sxy - sx * sy / sw
+        sxx = np.maximum(sxx - sx * sx / sw, 0.0)
     informative = sxx[sxx > 0]
     lam = prior_weight * float(np.percentile(informative, 90)) if informative.size else 1.0
     k0 = prior_fraction * k_global
@@ -238,6 +245,7 @@ def brightness_matched_strength(
     tile: int = 40,
     bin_width: float = 0.25,
     prior_weight: float = 0.3,
+    local_offset: bool = False,
 ) -> np.ndarray:
     """Intensidade local usando só evidência de pixels com brilho parecido; sem evidência, 0.
 
@@ -262,6 +270,12 @@ def brightness_matched_strength(
         w = w_flat * member
         sxy = cv2.boxFilter(w * x * y, -1, box, normalize=False)
         sxx = cv2.boxFilter(w * x * x, -1, box, normalize=False)
+        if local_offset:  # contraste contra os vizinhos: uma sombra da cena na janela não vira "fungo"
+            sw = np.maximum(cv2.boxFilter(w, -1, box, normalize=False), 1e-6)
+            sx = cv2.boxFilter(w * x, -1, box, normalize=False)
+            sy = cv2.boxFilter(w * y, -1, box, normalize=False)
+            sxy = sxy - sx * sy / sw
+            sxx = np.maximum(sxx - sx * sx / sw, 0.0)
         k_c = sxy / (sxx + lam)  # prior 0: sem evidência, não corrige
         num += member * k_c
         den += member
