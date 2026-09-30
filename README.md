@@ -43,6 +43,34 @@ Sem `calibration/`, o script tenta estimar o fungo só pelas áreas lisas das fo
 
 Arquivos que não são imagens válidas, ou com resolução diferente da máscara, são pulados e listados no fim.
 
+### Ajustes por defeito
+
+Cada defeito tem seus próprios controles. Sem nenhuma opção, o resultado é o padrão.
+
+| Opção | No `fungusfix.toml` | O que faz |
+|---|---|---|
+| `--preset suave\|padrao\|maximo` | `preset = "suave"` | ponto de partida: `suave` aplica 70% da correção com teto menor; `maximo` sobe o teto e mede paredes escuras |
+| `--forca-teia 0.8` | `[teia] forca = 0.8` | fração da correção dos filamentos (0 = não corrige, 1 = completa, até 2) |
+| `--forca-mancha 0.8` | `[mancha] forca = 0.8` | fração da correção da mancha marrom/branca |
+| `--teto-mancha 1.0` | `[mancha] teto = 1.0` | limita a mancha a N vezes a intensidade da foto (evita pontos claros em faixas sombreadas) |
+| `--sem-ajuste-mancha` | `[mancha] ajuste_final = false` | desliga o acerto fino da mancha |
+| `--paredes-escuras` | `[teia] paredes_escuras = true` | desconta o ruído do sensor para medir paredes escuras sob lâmpada |
+| `--sem-pixels-quentes` | `[pixels_quentes] corrigir = false` | não remove os pixels quentes |
+| `--debug` | — | salva em `saída/_debug/` um mapa do que mudou (vermelho = clareou, azul = escureceu) |
+
+O arquivo `fungusfix.toml` na pasta onde o programa roda é lido automaticamente (ou use `--config arquivo.toml`). Ele aceita ajustes **só para algumas fotos**:
+
+```toml
+[teia]
+forca = 0.9
+
+[[foto]]
+arquivos = "IMG_313*"   # padrão de nome
+mancha = { teto = 1.0 }
+```
+
+Veja `fungusfix.exemplo.toml` para todas as opções comentadas. A prioridade é: padrão → predefinição → arquivo → linha de comando → `[[foto]]`.
+
 ## Como funciona
 
 ### O defeito
