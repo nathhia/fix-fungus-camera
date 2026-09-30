@@ -179,7 +179,6 @@ def strength_field(
     tile: int = 40,
     prior_fraction: float = 0.5,
     prior_weight: float = 0.3,
-    local_offset: bool = False,
 ) -> np.ndarray:
     """Intensidade k variando no espaço, estimada em janelas de ``tile`` px (escala de análise).
 
@@ -195,12 +194,6 @@ def strength_field(
     box = (tile, tile)
     sxy = cv2.boxFilter(w * x * y, -1, box, normalize=False)
     sxx = cv2.boxFilter(w * x * x, -1, box, normalize=False)
-    if local_offset:  # contraste contra os vizinhos: uma sombra da cena na janela não vira "fungo"
-        sw = np.maximum(cv2.boxFilter(w, -1, box, normalize=False), 1e-6)
-        sx = cv2.boxFilter(w * x, -1, box, normalize=False)
-        sy = cv2.boxFilter(w * y, -1, box, normalize=False)
-        sxy = sxy - sx * sy / sw
-        sxx = np.maximum(sxx - sx * sx / sw, 0.0)
     informative = sxx[sxx > 0]
     lam = prior_weight * float(np.percentile(informative, 90)) if informative.size else 1.0
     k0 = prior_fraction * k_global
@@ -238,30 +231,6 @@ def split_broad_component(a: np.ndarray, radius: int = 12) -> tuple[np.ndarray, 
     return a - broad, broad
 
 
-def scene_level(
-    y: np.ndarray, w_flat: np.ndarray, x: np.ndarray, log_lum: np.ndarray, window: int = 81, bin_width: float = 0.25
-) -> np.ndarray:
-    """Nível local do resíduo fora do defeito, entre pixels de brilho parecido.
-
-    Uma sombra da própria cena (borda escura sob uma prateleira) deixa o resíduo negativo numa
-    região inteira; medido só onde o mapa quase não tem defeito, esse nível é descontado para não
-    ser atribuído ao fungo. A própria mancha não entra na média, então ela não se anula.
-    """
-    free = w_flat * (x < 0.2 * float(x.max() if x.size else 0.0) + 1e-6)
-    lo, hi = np.percentile(log_lum, 1), np.percentile(log_lum, 99)
-    num = np.zeros_like(y)
-    den = np.zeros_like(y)
-    box = (window, window)
-    for c in np.arange(lo, hi + bin_width, bin_width):
-        member = np.clip(1.0 - np.abs(log_lum - c) / bin_width, 0.0, 1.0).astype(np.float32)
-        sw = cv2.boxFilter(free * member, -1, box, normalize=False)
-        level = cv2.boxFilter(free * member * y, -1, box, normalize=False) / np.maximum(sw, 1e-6)
-        ok = (sw > 50).astype(np.float32)  # sem vizinhos suficientes: não desconta nada
-        num += member * ok * level
-        den += member
-    return num / np.maximum(den, 1e-6)
-
-
 def brightness_matched_strength(
     res: np.ndarray,
     x: np.ndarray,
@@ -269,7 +238,6 @@ def brightness_matched_strength(
     tile: int = 40,
     bin_width: float = 0.25,
     prior_weight: float = 0.3,
-    local_offset: bool = False,
 ) -> np.ndarray:
     """Intensidade local usando só evidência de pixels com brilho parecido; sem evidência, 0.
 
@@ -281,8 +249,6 @@ def brightness_matched_strength(
     r = res
     w_flat = (~np.isnan(r)).astype(np.float32)
     y = np.nan_to_num(-r).astype(np.float32)
-    if local_offset:
-        y = y - scene_level(y, w_flat, x, log_lum)
     box = (tile, tile)
     lo, hi = np.percentile(log_lum, 1), np.percentile(log_lum, 99)
     centers = np.arange(lo, hi + bin_width, bin_width)

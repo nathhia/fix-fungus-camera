@@ -70,8 +70,6 @@ class CorrectionParams:
     touchup_min: float = 0.02  # atenuação (log, desfocada) que define uma mancha larga para o ajuste final
     touchup_ring: int = 20  # vizinhança (px de análise) usada como referência no ajuste final
     touchup_max: float = 0.08  # teto do ajuste final, em log (≈ ±8%)
-    thin_local_offset: bool = False  # intensidade local da teia medida como contraste contra os vizinhos
-    broad_local_offset: bool = False  # idem para as manchas largas
 
 
 @dataclass(frozen=True)
@@ -147,11 +145,9 @@ def _flatfield_pass(
         if params.per_channel:
             # A cor da sombra depende da luz da cena (a mancha marrom rouba mais azul sob céu azul do que
             # sob luz de lâmpada): mede a intensidade por canal e por região, puxada para o k de luminância.
-            k_field = np.dstack(
-                [strength_field(res[..., c], a[..., c], k, local_offset=params.thin_local_offset) for c in range(3)]
-            )
+            k_field = np.dstack([strength_field(res[..., c], a[..., c], k) for c in range(3)])
         else:
-            k_field = strength_field(res, a, k, local_offset=params.thin_local_offset)
+            k_field = strength_field(res, a, k)
 
     k3 = k_field if k_field.ndim == 3 else k_field[..., None]
     if params.strength is None and params.broad_brightness_matched:
@@ -160,12 +156,7 @@ def _flatfield_pass(
         thin, broad = split_broad_component(a)
         small = cv2.resize(img_bgr, (a.shape[1], a.shape[0]), interpolation=cv2.INTER_AREA).astype(np.float32)
         log_lum = cv2.GaussianBlur(np.log(small.mean(axis=2) + 1.0), (0, 0), 3)
-        k_broad = np.dstack(
-            [
-                brightness_matched_strength(res[..., c], broad[..., c], log_lum, local_offset=params.broad_local_offset)
-                for c in range(3)
-            ]
-        )
+        k_broad = np.dstack([brightness_matched_strength(res[..., c], broad[..., c], log_lum) for c in range(3)])
         log_gain = k3 * thin + k_broad * broad
     else:
         log_gain = k3 * a
